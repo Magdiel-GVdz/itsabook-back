@@ -1,5 +1,6 @@
 import os
 from neo4j import GraphDatabase
+import json
 
 # Configuración de la conexión a Neo4j
 neo4j_uri = os.environ.get('NEO4J_URI')
@@ -32,16 +33,17 @@ def with_neo4j_session(func):
 @with_neo4j_session
 def lambda_handler(event, context, neo4j_session=None):
     try:
-        user = event['user']
-        review = event['review']
+        user = event['user_sub']
+        post = event['post_id']
         
         # Crear una relacion de likes entre el usuario y el review
         result = neo4j_session.run(
-            "MATCH (u:User {sub: $user}), (r:Review {id: $review}) " +
-            "MERGE (u)-[r:LIKES]->(r) " +
-            "RETURN r",
+            "MATCH (u:User {sub: $user})"
+            "MATCH (p:Post {id: $post}) "
+            "CREATE (u)-[:LIKES]->(p)"
+            "RETURN u, p",
             user=user,
-            review=review
+            post=post
         )
         
         # Devolver los IDs de los usuarios como resultado
@@ -49,10 +51,13 @@ def lambda_handler(event, context, neo4j_session=None):
             'statusCode': 200,
             'body': json.dumps({
                 'user': user,
-                'review': review,
+                'review': post,
             })
         }
     except Exception as e:
         print(e)
-        return "error"
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
 
