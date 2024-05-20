@@ -1,6 +1,8 @@
 import os
 from neo4j import GraphDatabase
 import json
+import re
+import datetime
 
 # Configuración de la conexión a Neo4j
 neo4j_uri = os.environ.get('NEO4J_URI')
@@ -18,7 +20,7 @@ def with_neo4j_session(func):
             return func(*args, **kwargs)
     return wrapper
 
-# Función para manejar el evento de Post Confirmation en AWS Cognito
+# Función para crear un nodo de post y sus respectivos nodos tags y relacionarlos
 @with_neo4j_session
 def lambda_handler(event, context, neo4j_session=None):
     try:
@@ -27,107 +29,83 @@ def lambda_handler(event, context, neo4j_session=None):
         selectedBook = event['selectedBook']
         
         #POST
-        ratingValue = event.get('ratingValue')
         reviewText = event.get('reviewText')
-        book_id = selectedBook.get('id')
-        previewLink = selectedBook.get('previewLink')
-        description = selectedBook.get('description')
         link = selectedBook.get('link')
+        previewLink = selectedBook.get('previewLink')
+        image = selectedBook.get('image')
         title = selectedBook.get('title')
         subtitle = selectedBook.get('subtitle')
-        image = selectedBook.get('image')
-        averageRating = selectedBook.get('averageRating')
-        ratingCount = selectedBook.get('ratingCount')
+        description = selectedBook.get('description')
+        book_id = selectedBook.get('id')
+        ratingValue = event.get('ratingValue') or 0
         
         #TAGS LIST
         authors = selectedBook.get('authors') or []
         categories = selectedBook.get('categories') or []
-        #TAGS
-        publishedDate = selectedBook.get('publishedDate')
-        pageCount = selectedBook.get('pageCount')
-        isbn = selectedBook.get('isbn')
-        isbn13 = selectedBook.get('isbn13')
-        language = selectedBook.get('language')
         publisher = selectedBook.get('publisher')
-
-        tags_nodes = []
-        # Crear nodos de tags
-        queries = [
-            "MERGE (t:Tag {publishedDate: $publishedDate}) RETURN t",
-            "MERGE (t:Tag {pageCount: $pageCount}) RETURN t",
-            "MERGE (t:Tag {isbn: $isbn}) RETURN t",
-            "MERGE (t:Tag {isbn13: $isbn13}) RETURN t",
-            "MERGE (t:Tag {language: $language}) RETURN t",
-            "MERGE (t:Tag {publisher: $publisher}) RETURN t"
-        ]
-        for query in queries:
-            result = neo4j_session.run(
-                query,
-                publishedDate=publishedDate,
-                pageCount=pageCount,
-                isbn=isbn,
-                isbn13=isbn13,
-                language=language,
-                publisher=publisher
-            )
-            tags_nodes.append(result.single()[0])
-        for author in authors:
-            result = neo4j_session.run(
-                "MERGE (a:Tag {author: $author}) RETURN a",
-                author=author
-            )
-            tags_nodes.append(result.single()[0])
-        for category in categories:
-            result = neo4j_session.run(
-                "MERGE (c:Tag {category: $category}) RETURN c",
-                category=category
-            )
-            tags_nodes.append(result.single()[0])
         
-        # crear un nodo de review
+        # HASTAGS (lista de hastags)
+        hastags = getHasTags(reviewText) or []
+        
+        tags = hastags + authors + categories + [publisher]
+        # Limpiar lista de tags eliminando valores None y duplicados
+        tags = list(set(filter(None, tags)))
+
+        # Crear los nodos de etiquetas (tags)
+        for tag in tags:
+            neo4j_session.run(
+                "MERGE (t:Tag {tag: $tag})",
+                tag=tag
+            )
+            
+        creation_date = datetime.datetime.now().isoformat()
+
+        # Crear el nodo de post y relacionarlo con el nodo de usuario
         result = neo4j_session.run(
-            "CREATE (r:Review "
-            "{ratingValue: $ratingValue, "
-            "reviewText: $reviewText, "
-            "book_id: $book_id, "
-            "previewLink: $previewLink, "
-            "description: $description, "
-            "link: $link, "
-            "title: $title, "
-            "subtitle: $subtitle, "
-            "image: $image, "
-            "averageRating: $averageRating, "
-            "ratingCount: $ratingCount})"
-            "WITH r "
-            "MATCH (u:User {sub: $sub}) "
-            "MATCH (t:Tag) WHERE id(t) IN $tags_nodes "
-            "MERGE (u)-[r1:REVIEWED]->(r) "
-            "CREATE (r)-[r2:HAS_TAG]->(t) "
-            "RETURN r"
-            ,
-            ratingValue=ratingValue,
+            """
+            MERGE (u:User {sub: $sub})
+            MERGE (b:Post {
+                id: apoc.create.uuid(),
+                reviewText: $reviewText,
+                link: $link,
+                previewLink: $previewLink,
+                image: $image,
+                title: $title,
+                subtitle: $subtitle,
+                description: $description,
+                ratingValue: $ratingValue,
+                creation_date: $creation_date
+            })
+            MERGE (u)-[r:POSTED]->(b)
+            WITH u, b
+            UNWIND $tags as tag_name
+            MATCH (t:Tag {tag: tag_name})
+            MERGE (b)-[:HAS_TAG]->(t)
+            RETURN u, b
+            """,
+            sub=sub,
             reviewText=reviewText,
-            book_id=book_id,
-            previewLink=previewLink,
-            description=description,
             link=link,
+            previewLink=previewLink,
+            image=image,
             title=title,
             subtitle=subtitle,
-            image=image,
-            averageRating=averageRating,
-            ratingCount=ratingCount,
-            sub=sub,
-            tags_nodes=[node.id for node in tags_nodes]
+            description=description,
+            ratingValue=ratingValue,
+            creation_date=creation_date,
+            tags=tags
         )
-        
+
         return {
             'statusCode': 200,
-            'body': json.dumps({
-                'sub': sub,
-                'book_id': book_id
-            })
+            'body': 'Post and tags created successfully.'
         }
-        
     except Exception as e:
-        print(e)
-        return "error"
+        return {
+            'statusCode': 500,
+            'body': str(e)
+        }
+    
+    
+def getHasTags(text):
+    return re.findall(r'#\w+', text)
