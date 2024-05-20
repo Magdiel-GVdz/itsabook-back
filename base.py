@@ -1,5 +1,6 @@
 import os
 from neo4j import GraphDatabase
+import json
 
 # Configuración de la conexión a Neo4j
 neo4j_uri = os.environ.get('NEO4J_URI')
@@ -17,12 +18,16 @@ def with_neo4j_session(func):
             return func(*args, **kwargs)
     return wrapper
 
-# Función para manejar el evento de Post Confirmation en AWS Cognito
+
 @with_neo4j_session
 def lambda_handler(event, context, neo4j_session=None):
     try:
         
-        return event
+        return {
+            'statusCode': 200,}
     except Exception as e:
         print(e)
-        return "error"
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
